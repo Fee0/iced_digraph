@@ -17,7 +17,7 @@ use digraph::normalize::Scale;
 use digraph::render::{render_rgba_pixels, RenderParams};
 use digraph::{Digraph, HeatmapPalette, Mode};
 use iced::widget::image::Handle;
-use iced::widget::{button, column, container, pick_list, row, slider, text, text_input, Column, Image, Row};
+use iced::widget::{button, column, pick_list, row, slider, text, text_input, Image};
 use iced::{Element, Fill, Length, Task, Theme};
 use std::path::PathBuf;
 
@@ -158,12 +158,6 @@ impl App {
         let mode_pick = pick_list(MODES, Some(self.mode), Message::Mode);
         let scale_pick = pick_list(SCALES, Some(self.scale), Message::Scale);
         let cell = self.cell_slider.round().clamp(1.0, 8.0) as u32;
-        let heatmap_px = (256 * cell) as f32;
-        let major_step = 16u32;
-        let major_tick_px = (major_step * cell) as f32;
-        let axis_band_px = 28.0;
-        let tick_font_size = 12;
-        let ticks: Vec<u32> = (0..=255).step_by(major_step as usize).collect();
 
         let controls = column![
             text("Palette").size(14),
@@ -182,59 +176,14 @@ impl App {
         .spacing(8)
         .width(Length::Fixed(300.0));
 
-        let make_x_axis_row = || {
-            ticks.iter().fold(
-                Row::new().width(Length::Fixed(heatmap_px)),
-                |row, value| {
-                    row.push(
-                        container(text(format!("{value:02X}")).size(tick_font_size))
-                            .width(Length::Fixed(major_tick_px))
-                            .height(Length::Fixed(axis_band_px)),
-                    )
-                },
-            )
-        };
-
-        let make_y_axis_col = || {
-            ticks.iter().fold(
-                Column::new().height(Length::Fixed(heatmap_px)),
-                |col, value| {
-                    col.push(
-                        container(text(format!("{value:02X}")).size(tick_font_size))
-                            .width(Length::Fixed(axis_band_px))
-                            .height(Length::Fixed(major_tick_px)),
-                    )
-                },
-            )
-        };
-
         let img = Image::new(self.image.clone())
-            .width(Length::Fixed(heatmap_px))
-            .height(Length::Fixed(heatmap_px))
+            .width(Fill)
+            .height(Fill)
             .content_fit(iced::ContentFit::Contain);
-
-        let heatmap_with_axes = column![
-            row![
-                container(text("")).width(Length::Fixed(axis_band_px)),
-                make_x_axis_row(),
-                container(text("")).width(Length::Fixed(axis_band_px)),
-            ],
-            row![
-                make_y_axis_col(),
-                img,
-                make_y_axis_col(),
-            ],
-            row![
-                container(text("")).width(Length::Fixed(axis_band_px)),
-                make_x_axis_row(),
-                container(text("")).width(Length::Fixed(axis_band_px)),
-            ],
-        ]
-        .spacing(4);
 
         row![
             controls,
-            container(heatmap_with_axes)
+            iced::widget::container(img)
                 .width(Fill)
                 .height(Fill)
                 .center_x(Fill)
