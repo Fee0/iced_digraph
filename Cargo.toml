@@ -7,6 +7,6 @@ publish = false
 
 [dependencies]
 digraph = { path = "../digraph" }
-iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tokio", "image"] }
+iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tokio", "image", "canvas"] }
 rfd = "0.17.2"
 tokio = { version = "1.40", default-features = false, features = ["macros", "rt-multi-thread"] }
