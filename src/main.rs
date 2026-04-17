@@ -20,7 +20,7 @@ use digraph::render::{render_rgba_pixels, RenderParams};
 use digraph::{Digraph, HeatmapPalette, Mode};
 use iced::widget::image::Handle;
 use iced::widget::{button, canvas, column, container, pick_list, row, slider, text, text_input, Image};
-use iced::{Element, Fill, Length, Task, Theme};
+use iced::{Element, Fill, Length, Size, Task, Theme};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -318,5 +318,6 @@ fn main() -> iced::Result {
     iced::application(App::init, App::update, App::view)
         .theme(App::theme)
         .title(TITLE)
+        .window_size(Size::new(1370.0, 1000.0))
         .run()
 }
