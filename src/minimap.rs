@@ -5,6 +5,7 @@
 //! tessellation stays under typical GPU buffer limits (~256 MiB).
 
 use std::cell::Cell;
+use std::sync::{Arc, RwLock};
 
 use iced::mouse;
 use iced::widget::canvas::{Action, Cache, Event, Frame, Geometry, Path, Program, Stroke};
@@ -125,11 +126,13 @@ impl Default for RailState {
 }
 
 /// Canvas: each y-row covers `bytes_per_row` file bytes as equal-width color columns.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ByteRangeRail {
     pub range_start_norm: f32,
     pub range_end_norm: f32,
-    pub bytes: std::sync::Arc<Vec<u8>>,
+    pub bytes: Arc<RwLock<Vec<u8>>>,
+    /// Logical file length (metadata). While `bytes.read().len() < total_len`, the strip is a placeholder.
+    pub total_len: usize,
     pub row_width: f32,
     /// Consecutive file bytes represented by one horizontal strip row (>= 1).
     pub bytes_per_row: u32,
@@ -148,7 +151,7 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
         cursor: mouse::Cursor,
     ) -> Option<Action<M>> {
         let h = bounds.height.max(1.0);
-        let n = self.bytes.len();
+        let n = self.total_len;
         let gap = min_gap(n);
 
         match event {
@@ -256,7 +259,7 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
     ) -> Vec<Geometry<Renderer>> {
         let w = bounds.width.max(1.0);
         let h = bounds.height.max(1.0);
-        let n = self.bytes.len();
+        let n = self.total_len;
         let row_w = self.row_width.max(1.0);
 
         if state.strip_gen_baked.get() != self.strip_generation {
@@ -276,6 +279,25 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
                 );
                 return;
             }
+
+            let guard = match self.bytes.read() {
+                Ok(g) => g,
+                Err(_) => {
+                    frame.fill(
+                        &Path::rectangle(Point::ORIGIN, Size::new(w, h)),
+                        palette.background.scale_alpha(0.9),
+                    );
+                    return;
+                }
+            };
+            if guard.len() < n {
+                frame.fill(
+                    &Path::rectangle(Point::ORIGIN, Size::new(w, h)),
+                    palette.background.scale_alpha(0.75),
+                );
+                return;
+            }
+
             let rows = strip_row_count(n, eff_bpr.min(u32::MAX as usize) as u32);
             let row_h = h / rows as f32;
             for r in 0..rows {
@@ -288,7 +310,7 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
                     break;
                 }
                 let hi = (lo + eff_bpr).min(n);
-                let chunk = &self.bytes[lo..hi];
+                let chunk = &guard[lo..hi];
                 let len = chunk.len().max(1);
                 let seg_count = len.clamp(1, MAX_SEGMENTS_PER_ROW);
                 let seg_w = row_w / seg_count as f32;
