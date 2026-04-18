@@ -50,7 +50,48 @@ fn average_byte(chunk: &[u8]) -> u8 {
 }
 
 /// Fixed hit area half-thickness (px) for each horizontal handle.
-const HANDLE_HALF: f32 = 6.0;
+const HANDLE_HALF: f32 = 3.0;
+
+/// Where a press (or hover) lands on the rail: handles or the selection band.
+#[derive(Clone, Copy)]
+enum RailHit {
+    Start,
+    End,
+    Range,
+}
+
+/// Local `y` in canvas coordinates, `h` = canvas height.
+fn rail_hit(y: f32, h: f32, range_start_norm: f32, range_end_norm: f32) -> Option<RailHit> {
+    let h = h.max(1.0);
+    let y_start = range_start_norm * h;
+    let y_end = range_end_norm * h;
+    let (lo, hi) = if y_start <= y_end {
+        (y_start, y_end)
+    } else {
+        (y_end, y_start)
+    };
+
+    let hit_start = (y - y_start).abs() <= HANDLE_HALF;
+    let hit_end = (y - y_end).abs() <= HANDLE_HALF;
+
+    if hit_start && !hit_end {
+        return Some(RailHit::Start);
+    }
+    if hit_end && !hit_start {
+        return Some(RailHit::End);
+    }
+    if hit_start && hit_end {
+        return Some(if (y - y_start).abs() <= (y - y_end).abs() {
+            RailHit::Start
+        } else {
+            RailHit::End
+        });
+    }
+    if y >= lo && y <= hi {
+        return Some(RailHit::Range);
+    }
+    None
+}
 
 /// Map a byte to RGB in four broad bands across 0..=255.
 pub fn byte_value_color(b: u8) -> Color {
@@ -155,41 +196,23 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
                 let y = p.y;
-                let y_start = self.range_start_norm * h;
-                let y_end = self.range_end_norm * h;
-                let (lo, hi) = if y_start <= y_end {
-                    (y_start, y_end)
-                } else {
-                    (y_end, y_start)
-                };
-
-                let hit_start = (y - y_start).abs() <= HANDLE_HALF;
-                let hit_end = (y - y_end).abs() <= HANDLE_HALF;
-
-                if hit_start && !hit_end {
-                    state.drag = Some(DragKind::Start);
-                    return Some(Action::capture());
-                }
-                if hit_end && !hit_start {
-                    state.drag = Some(DragKind::End);
-                    return Some(Action::capture());
-                }
-                if hit_start && hit_end {
-                    if (y - y_start).abs() <= (y - y_end).abs() {
+                match rail_hit(y, h, self.range_start_norm, self.range_end_norm)? {
+                    RailHit::Start => {
                         state.drag = Some(DragKind::Start);
-                    } else {
-                        state.drag = Some(DragKind::End);
+                        Some(Action::capture())
                     }
-                    return Some(Action::capture());
+                    RailHit::End => {
+                        state.drag = Some(DragKind::End);
+                        Some(Action::capture())
+                    }
+                    RailHit::Range => {
+                        state.drag = Some(DragKind::Range);
+                        state.anchor_start = self.range_start_norm;
+                        state.anchor_end = self.range_end_norm;
+                        state.anchor_cursor_y = p.y;
+                        Some(Action::capture())
+                    }
                 }
-                if y >= lo && y <= hi {
-                    state.drag = Some(DragKind::Range);
-                    state.anchor_start = self.range_start_norm;
-                    state.anchor_end = self.range_end_norm;
-                    state.anchor_cursor_y = p.y;
-                    return Some(Action::capture());
-                }
-                None
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let kind = state.drag?;
@@ -366,13 +389,20 @@ impl<M: From<RangeChanged>> Program<M> for ByteRangeRail {
     fn mouse_interaction(
         &self,
         state: &RailState,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if state.drag.is_some() {
-            mouse::Interaction::Grabbing
+            return mouse::Interaction::Grabbing;
+        }
+        let Some(p) = cursor.position_in(bounds) else {
+            return mouse::Interaction::None;
+        };
+        let h = bounds.height.max(1.0);
+        if rail_hit(p.y, h, self.range_start_norm, self.range_end_norm).is_some() {
+            mouse::Interaction::Grab
         } else {
-            mouse::Interaction::Crosshair
+            mouse::Interaction::None
         }
     }
 }
