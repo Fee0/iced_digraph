@@ -18,7 +18,7 @@
 use digraph::{render_rgba_pixels, Digraph, HeatmapPalette, Mode, RenderParams, Scale};
 use iced::futures::sink::SinkExt;
 use iced::widget::image::Handle;
-use iced::widget::{button, canvas, column, container, pick_list, row, text, Image};
+use iced::widget::{button, canvas, column, container, pick_list, progress_bar, row, text, Image};
 use iced::futures::Stream;
 use iced::{Element, Fill, Length, Size, Subscription, Task, Theme};
 use std::hash::{Hash, Hasher};
@@ -217,6 +217,16 @@ impl App {
         self.bytes.read().map(|g| g.len()).unwrap_or(0)
     }
 
+    /// Progress 0..=100 while a chunked file load is active (`active_load`).
+    fn load_percent(&self) -> f32 {
+        if self.file_total_len == 0 {
+            return 0.0;
+        }
+        let loaded = self.loaded_len() as f32;
+        let total = self.file_total_len as f32;
+        (100.0 * loaded / total.max(1.0)).clamp(0.0, 100.0)
+    }
+
     /// Byte span for selection handles, in logical file coordinates.
     fn selection_span_bytes(&self) -> usize {
         if self.file_total_len > 0 {
@@ -381,7 +391,7 @@ impl App {
         let row_w = RAIL_ROW_WIDTH.clamp(2.0, 256.0);
         let bpr = self.rail_bytes_per_row.max(1);
 
-        let controls = column![
+        let mut controls = column![
             text("Palette").size(14),
             palette_pick,
             text("Pair mode").size(14),
@@ -392,6 +402,17 @@ impl App {
         ]
         .spacing(8)
         .width(Length::Fixed(300.0));
+
+        if self.active_load.is_some() {
+            if self.file_total_len == 0 {
+                controls = controls.push(text("Reading file size…").size(12));
+            }
+            controls = controls.push(
+                progress_bar(0.0..=100.0, self.load_percent())
+                    .length(Fill)
+                    .girth(Length::Fixed(8.0)),
+            );
+        }
 
         let img = Image::new(self.image.clone())
             .width(Fill)
