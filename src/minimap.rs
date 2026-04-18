@@ -12,9 +12,6 @@ use iced::widget::canvas::{Action, Cache, Event, Frame, Geometry, Path, Program,
 use iced::widget::canvas::{LineCap, LineJoin};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 
-/// Warn in UI when the strip has this many **visual** rows (first full cache build can hitch).
-pub const STRIP_ROW_WARN: usize = 400_000;
-
 /// Number of horizontal strip bands for a file length and `bytes_per_row` packing.
 #[inline]
 pub fn strip_row_count(byte_len: usize, bytes_per_row: u32) -> usize {

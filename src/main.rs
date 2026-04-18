@@ -7,8 +7,8 @@
 //! ```
 //!
 //! Controls: palette, overlapping vs non-overlapping pairs, normalization dropdown,
-//! cell size slider, path, **Open…** (system file picker), and a **byte rail** beside the heatmap
-//! (scales vertically to the viewport; packs `bytes_per_row` per band as color columns; configurable width;
+//! **Open…** (system file picker), and a **byte rail** beside the heatmap
+//! (scales vertically to the viewport; packs `bytes_per_row` per band as color columns; fixed rail width;
 //! false color by value; draggable caps) to choose which byte range is fed into the digraph. The heatmap is shown as a bitmap via
 //! [`Image`](iced::widget::Image) and [`Handle::from_rgba`](iced::widget::image::Handle::from_rgba).
 //! The file dialog runs on a worker thread via [`tokio::task::spawn_blocking`](tokio::task::spawn_blocking).
@@ -18,7 +18,7 @@
 use digraph::{render_rgba_pixels, Digraph, HeatmapPalette, Mode, RenderParams, Scale};
 use iced::futures::sink::SinkExt;
 use iced::widget::image::Handle;
-use iced::widget::{button, canvas, column, container, pick_list, row, slider, text, text_input, Image};
+use iced::widget::{button, canvas, column, container, pick_list, row, text, Image};
 use iced::futures::Stream;
 use iced::{Element, Fill, Length, Size, Subscription, Task, Theme};
 use std::hash::{Hash, Hasher};
@@ -28,6 +28,9 @@ use std::sync::{Arc, RwLock};
 mod minimap;
 
 const TITLE: &str = "Digraph viewer";
+
+/// Byte rail width in logical pixels (used by the minimap canvas).
+const RAIL_ROW_WIDTH: f32 = 100.0;
 
 /// Bytes read from disk per subscription chunk.
 const READ_CHUNK: usize = 1024 * 1024;
@@ -47,10 +50,6 @@ enum Message {
     Palette(HeatmapPalette),
     Mode(Mode),
     Scale(Scale),
-    Cell(f32),
-    RailWidth(f32),
-    RailBytesPerRow(f32),
-    Path(String),
     PickFile,
     /// Path from the native dialog only (file body loads via [`App::subscription`]).
     FilePickResult(Result<String, String>),
@@ -164,13 +163,10 @@ struct App {
     scale: Scale,
     /// Slider value 1..=8 (cell pixels per digraph cell edge).
     cell_slider: f32,
-    /// Byte rail width in logical px (2..=256).
-    rail_row_width: f32,
     /// File bytes represented by one horizontal strip row (reduces vertical scroll).
     rail_bytes_per_row: u32,
     /// Bumps when bytes or rail layout change; invalidates canvas strip cache.
     rail_strip_generation: u64,
-    status: String,
     image: Handle,
     /// Selection along the full file, 0..1 (top = start of file).
     range_start_norm: f32,
@@ -200,16 +196,13 @@ impl App {
             palette: HeatmapPalette::default(),
             scale: Scale::CantorDust,
             cell_slider: 2.0,
-            rail_row_width: 48.0,
             rail_bytes_per_row: 64,
             rail_strip_generation: 1,
-            status: String::new(),
             image: Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
             range_start_norm: 0.0,
             range_end_norm: 1.0,
         };
         s.recompute_image();
-        s.refresh_status();
         (s, Task::none())
     }
 
@@ -222,36 +215,6 @@ impl App {
 
     fn loaded_len(&self) -> usize {
         self.bytes.read().map(|g| g.len()).unwrap_or(0)
-    }
-
-    fn refresh_status(&mut self) {
-        let loaded = self.loaded_len();
-        if self.active_load.is_some() {
-            if self.file_total_len == 0 {
-                self.status = format!("Reading {}… (probing size)", self.path);
-            } else {
-                self.status = format!(
-                    "Loading {loaded} / {} bytes into {}…",
-                    self.file_total_len, self.path
-                );
-            }
-            return;
-        }
-        if loaded == 0 && self.file_total_len == 0 {
-            self.status = format!("No data (could not read {}).", self.path);
-            return;
-        }
-        let n = self.file_total_len.max(loaded);
-        let (lo, hi) = self.selected_byte_range();
-        let mut msg = format!("Loaded {loaded} bytes (logical {n}). Selection [{lo}, {hi}).");
-        let rows = minimap::strip_row_count(n, self.rail_bytes_per_row);
-        if rows >= minimap::STRIP_ROW_WARN {
-            msg.push_str(&format!(
-                " Rail: {rows} strip rows (first paint may hitch; threshold {}).",
-                minimap::STRIP_ROW_WARN
-            ));
-        }
-        self.status = msg;
     }
 
     /// Byte span for selection handles, in logical file coordinates.
@@ -322,25 +285,6 @@ impl App {
                 self.recompute_image();
                 Task::none()
             }
-            Message::Cell(v) => {
-                self.cell_slider = v;
-                self.recompute_image();
-                Task::none()
-            }
-            Message::RailWidth(v) => {
-                self.rail_row_width = v.round().clamp(2.0, 256.0);
-                self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                Task::none()
-            }
-            Message::RailBytesPerRow(v) => {
-                self.rail_bytes_per_row = v.round().clamp(1.0, 65_536.0) as u32;
-                self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                Task::none()
-            }
-            Message::Path(p) => {
-                self.path = p;
-                Task::none()
-            }
             Message::PickFile => Task::perform(
                 async {
                     tokio::task::spawn_blocking(|| {
@@ -373,9 +317,8 @@ impl App {
                         });
                         self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
                         self.recompute_image();
-                        self.refresh_status();
                     }
-                    Err(e) => self.status = e,
+                    Err(_) => {}
                 }
                 Task::none()
             }
@@ -383,8 +326,7 @@ impl App {
                 self.file_total_len = total_len;
                 if let Ok(mut g) = self.bytes.write() {
                     g.clear();
-                    if let Err(e) = g.try_reserve_exact(total_len) {
-                        self.status = format!("Could not allocate buffer: {e}");
+                    if let Err(_) = g.try_reserve_exact(total_len) {
                         self.active_load = None;
                         self.file_total_len = 0;
                         return Task::none();
@@ -392,7 +334,6 @@ impl App {
                 }
                 self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
                 self.recompute_image();
-                self.refresh_status();
                 Task::none()
             }
             Message::FileLoadChunk(chunk) => {
@@ -405,31 +346,22 @@ impl App {
                 }
                 self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
                 self.recompute_image();
-                self.refresh_status();
                 Task::none()
             }
             Message::FileLoadDone => {
                 self.active_load = None;
-                let loaded = self.loaded_len();
-                if loaded != self.file_total_len && self.file_total_len > 0 {
-                    self.status = format!(
-                        "Warning: expected {} bytes, got {loaded} (truncated or race).",
-                        self.file_total_len
-                    );
-                }
                 self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
                 self.recompute_image();
-                self.refresh_status();
                 Task::none()
             }
             Message::FileLoadErr(e) => {
+                let _ = e;
                 self.active_load = None;
                 if let Ok(mut g) = self.bytes.write() {
                     g.clear();
                 }
                 self.file_total_len = 0;
                 self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                self.status = e;
                 self.recompute_image();
                 Task::none()
             }
@@ -437,7 +369,6 @@ impl App {
                 self.range_start_norm = r.start.clamp(0.0, 1.0);
                 self.range_end_norm = r.end.clamp(0.0, 1.0);
                 self.recompute_image();
-                self.refresh_status();
                 Task::none()
             }
         }
@@ -447,9 +378,7 @@ impl App {
         let palette_pick = pick_list(PALETTES, Some(self.palette), Message::Palette);
         let mode_pick = pick_list(MODES, Some(self.mode), Message::Mode);
         let scale_pick = pick_list(SCALES, Some(self.scale), Message::Scale);
-        let cell = self.cell_slider.round().clamp(1.0, 8.0) as u32;
-        let row_w = self.rail_row_width.round().clamp(2.0, 256.0);
-        let rail_px = row_w as u32;
+        let row_w = RAIL_ROW_WIDTH.clamp(2.0, 256.0);
         let bpr = self.rail_bytes_per_row.max(1);
 
         let controls = column![
@@ -459,16 +388,7 @@ impl App {
             mode_pick,
             text("Normalization").size(14),
             scale_pick,
-            text(format!("Cell size: {cell}px")).size(14),
-            slider(1.0..=8.0, self.cell_slider, Message::Cell),
-            text(format!("Rail width: {rail_px}px")).size(14),
-            slider(2.0..=256.0, self.rail_row_width, Message::RailWidth),
-            text(format!("Bytes / strip row: {bpr}")).size(14),
-            slider(1.0..=4096.0, self.rail_bytes_per_row as f32, Message::RailBytesPerRow),
-            text("Path").size(14),
-            text_input("Path", &self.path).on_input(Message::Path),
             button("Open…").on_press(Message::PickFile),
-            text(&self.status).size(12),
         ]
         .spacing(8)
         .width(Length::Fixed(300.0));
@@ -532,6 +452,6 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .title(TITLE)
-        .window_size(Size::new(1370.0, 1000.0))
+        .window_size(Size::new(1420.0, 1000.0))
         .run()
 }
