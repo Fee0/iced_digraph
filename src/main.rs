@@ -256,6 +256,9 @@ impl App {
     }
 
     fn recompute_image(&mut self) {
+        if self.active_load.is_some() {
+            return;
+        }
         let (lo, hi) = self.selected_byte_range();
         let guard = match self.bytes.read() {
             Ok(g) => g,
@@ -326,7 +329,6 @@ impl App {
                             path,
                         });
                         self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                        self.recompute_image();
                     }
                     Err(_) => {}
                 }
@@ -334,16 +336,21 @@ impl App {
             }
             Message::FileLoadMeta { total_len } => {
                 self.file_total_len = total_len;
-                if let Ok(mut g) = self.bytes.write() {
-                    g.clear();
-                    if let Err(_) = g.try_reserve_exact(total_len) {
-                        self.active_load = None;
-                        self.file_total_len = 0;
-                        return Task::none();
+                let reserve_ok = match self.bytes.write() {
+                    Ok(mut g) => {
+                        g.clear();
+                        g.try_reserve_exact(total_len).is_ok()
                     }
+                    Err(_) => false,
+                };
+                if !reserve_ok {
+                    self.active_load = None;
+                    self.file_total_len = 0;
+                    self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
+                    self.recompute_image();
+                    return Task::none();
                 }
                 self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                self.recompute_image();
                 Task::none()
             }
             Message::FileLoadChunk(chunk) => {
@@ -354,8 +361,6 @@ impl App {
                         g.extend_from_slice(&chunk[..take]);
                     }
                 }
-                self.rail_strip_generation = self.rail_strip_generation.wrapping_add(1);
-                self.recompute_image();
                 Task::none()
             }
             Message::FileLoadDone => {
